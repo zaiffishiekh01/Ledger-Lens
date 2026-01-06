@@ -88,7 +88,12 @@ DATABASES = {
         'USER': os.getenv('DB_USER', ''),
         'PASSWORD': os.getenv('DB_PASSWORD', ''),
         'HOST': os.getenv('DB_HOST', ''),
-        'PORT': os.getenv('DB_PORT', '5432'),
+        'PORT': os.getenv('DB_PORT', '6543'),  # Default to transaction pooler port
+        'OPTIONS': {
+            'connect_timeout': 30,
+        },
+        # Set to 0 for transaction pooler (pooler manages connection lifetime)
+        'CONN_MAX_AGE': 0,
     }
 }
 
