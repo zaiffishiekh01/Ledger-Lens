@@ -48,6 +48,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Copy source code (before switching user to ensure proper permissions)
 COPY --chown=appuser:appuser . .
 
+# Create media directory with proper permissions (as root before switching user)
+RUN mkdir -p /app/media/pdfs && \
+    chown -R appuser:appuser /app/media && \
+    chmod -R 700 /app/media
+
 # Collect static files (run as root, then switch user)
 RUN python manage.py collectstatic --noinput || true
 
