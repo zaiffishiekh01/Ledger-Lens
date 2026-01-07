@@ -64,4 +64,5 @@ EXPOSE 8000
 
 # Run migrations and start server
 # Use $PORT environment variable for Render compatibility
-CMD ["sh", "-c", "python manage.py migrate && gunicorn backend.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 3 --timeout 500"]
+# Single worker with higher timeout to avoid OOM/timeouts during heavy PDF processing
+CMD ["sh", "-c", "python manage.py migrate && gunicorn backend.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 1 --timeout 900"]
