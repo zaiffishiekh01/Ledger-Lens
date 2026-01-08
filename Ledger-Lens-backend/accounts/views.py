@@ -7,6 +7,8 @@ from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 import os
 import json
+import threading
+import gc
 from .models import PDFUpload, Transaction
 from .pdf_extractor import BankStatementExtractor
 
@@ -35,9 +37,80 @@ def get_frontend_result(pdf_upload):
         'total_transactions': pdf_upload.total_transactions,
     }
 
+def process_pdf_background(pdf_upload_id):
+    """Process PDF in background thread"""
+    extractor = None
+    results = None
+    try:
+        pdf_upload = PDFUpload.objects.get(id=pdf_upload_id)
+        
+        # Check if already processed (thread safety)
+        if pdf_upload.processed:
+            return
+        
+        file_path = pdf_upload.file.path
+        extractor = BankStatementExtractor()
+        results = extractor.process_bank_statement(file_path)
+        
+        if 'error' in results:
+            pdf_upload.processing_error = results['error']
+            pdf_upload.save()
+            return
+        
+        # Calculate analytics if available
+        analytics = results.get('analytics', {})
+        if not analytics and results.get('monthly_analysis'):
+            analytics = extractor.calculate_analytics(results.get('monthly_analysis', {}))
+        
+        pdf_upload.processed = True
+        pdf_upload.account_info = results.get('account_info', {})
+        pdf_upload.total_transactions = results.get('total_transactions', 0)
+        pdf_upload.pages_processed = results.get('pages_processed', 0)
+        pdf_upload.monthly_analysis = results.get('monthly_analysis', {})
+        # Store analytics in account_info for easy access
+        if analytics:
+            pdf_upload.account_info['analytics'] = analytics
+        pdf_upload.save()
+        
+        # Create transaction records
+        transactions = results.get('transactions', [])
+        for transaction_data in transactions:
+            Transaction.objects.create(
+                pdf_upload=pdf_upload,
+                date=transaction_data.get('date', ''),
+                description=transaction_data.get('description', ''),
+                debit=transaction_data.get('debit', 0),
+                credit=transaction_data.get('credit', 0),
+                balance=transaction_data.get('balance', 0)
+            )
+        
+        # Memory cleanup: explicitly delete large objects
+        del results
+        del analytics
+        if extractor:
+            del extractor
+        
+        # Force garbage collection to free memory
+        gc.collect()
+    except Exception as e:
+        try:
+            pdf_upload = PDFUpload.objects.get(id=pdf_upload_id)
+            pdf_upload.processing_error = str(e)
+            pdf_upload.save()
+        except:
+            pass
+        finally:
+            # Cleanup in case of error
+            if results:
+                del results
+            if extractor:
+                del extractor
+            gc.collect()
+
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
 def upload_pdf(request):
+    """Upload PDF and return immediately, process in background"""
     try:
         if 'file' not in request.FILES:
             return Response(
@@ -50,62 +123,30 @@ def upload_pdf(request):
                 {'error': 'Only PDF files are allowed'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # Create PDF upload record
         pdf_upload = PDFUpload.objects.create(
             file=pdf_file,
             processed=False
         )
-        try:
-            file_path = pdf_upload.file.path
-            extractor = BankStatementExtractor()
-            results = extractor.process_bank_statement(file_path)
-            if 'error' in results:
-                pdf_upload.processing_error = results['error']
-                pdf_upload.save()
-                return Response(
-                    {'error': results['error']}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            pdf_upload.processed = True
-            pdf_upload.account_info = results.get('account_info', {})
-            pdf_upload.total_transactions = results.get('total_transactions', 0)
-            pdf_upload.pages_processed = results.get('pages_processed', 0)
-            pdf_upload.monthly_analysis = results.get('monthly_analysis', {})
-            pdf_upload.save()
-            transactions = results.get('transactions', [])
-            for transaction_data in transactions:
-                Transaction.objects.create(
-                    pdf_upload=pdf_upload,
-                    date=transaction_data.get('date', ''),
-                    description=transaction_data.get('description', ''),
-                    debit=transaction_data.get('debit', 0),
-                    credit=transaction_data.get('credit', 0),
-                    balance=transaction_data.get('balance', 0)
-                )
-            # Build a full response for the frontend
-            account_info = pdf_upload.account_info or {}
-            # Add pages_processed and total_transactions to account_info for frontend
-            account_info['pages_processed'] = pdf_upload.pages_processed
-            account_info['total_transactions'] = pdf_upload.total_transactions
-            response_data = {
-                'account_info': account_info,
-                'monthly_analysis': pdf_upload.monthly_analysis or {},
-                'analytics': results.get('analytics', {
-                    'average_fluctuation': 0,
-                    'net_cash_flow_stability': 0,
-                    'total_foreign_transactions': 0,
-                    'total_foreign_amount': 0,
-                    'overdraft_frequency': 0,
-                    'overdraft_total_days': 0
-                })
-            }
-            return Response(response_data, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            pdf_upload.processing_error = str(e)
-            pdf_upload.save()
-            return Response(
-                {'error': f'Error processing PDF: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        
+        # Thread safety: Check if already processed before starting thread
+        # (This prevents duplicate processing if upload endpoint is called multiple times)
+        if not pdf_upload.processed:
+            # Start background processing
+            thread = threading.Thread(target=process_pdf_background, args=(pdf_upload.id,))
+            thread.daemon = True
+            thread.start()
+        
+        # Return immediately with PDF ID for polling
+        return Response(
+            {
+                'id': pdf_upload.id,
+                'status': 'processing',
+                'message': 'PDF uploaded successfully. Processing in background.'
+            },
+            status=status.HTTP_202_ACCEPTED
+        )
     except Exception as e:
         return Response(
             {'error': f'Error uploading file: {str(e)}'}, 
@@ -114,10 +155,43 @@ def upload_pdf(request):
 
 @api_view(['GET'])
 def get_pdf_results(request, pdf_id):
+    """Get PDF processing results - returns full data when processed, status when processing"""
     try:
         pdf_upload = PDFUpload.objects.get(id=pdf_id)
-        response_data = get_frontend_result(pdf_upload)
-        return Response(response_data, status=status.HTTP_200_OK)
+        
+        # If already processed, return results immediately (thread safety)
+        if pdf_upload.processed:
+            account_info = pdf_upload.account_info or {}
+            account_info['pages_processed'] = pdf_upload.pages_processed
+            account_info['total_transactions'] = pdf_upload.total_transactions
+            analytics = account_info.pop('analytics', {})
+            response_data = {
+                'id': pdf_upload.id,
+                'status': 'completed',
+                'account_info': account_info,
+                'monthly_analysis': pdf_upload.monthly_analysis or {},
+                'analytics': analytics
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
+        
+        # If still processing, return status
+        if pdf_upload.processing_error:
+            return Response(
+                {
+                    'id': pdf_upload.id,
+                    'status': 'error',
+                    'error': pdf_upload.processing_error
+                },
+                status=status.HTTP_200_OK
+            )
+        return Response(
+            {
+                'id': pdf_upload.id,
+                'status': 'processing',
+                'message': 'PDF is being processed. Please check again in a moment.'
+            },
+            status=status.HTTP_200_OK
+        )
     except PDFUpload.DoesNotExist:
         return Response(
             {'error': 'PDF upload not found'}, 
