@@ -7,6 +7,9 @@ import fitz  # PyMuPDF
 import pytesseract
 import json
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BankStatementExtractor:
     def __init__(self, config_path=None):
@@ -320,15 +323,21 @@ class BankStatementExtractor:
     def extract_text_from_pdf(self, pdf_path):
         """Extract text from PDF using PyMuPDF and OCR"""
         doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+        logger.info(f"[EXTRACTOR] Opening PDF with {total_pages} pages")
         all_text = []
         
-        for page_num in range(len(doc)):
+        for page_num in range(total_pages):
+            page_start = datetime.now()
+            logger.info(f"[EXTRACTOR] Processing page {page_num + 1}/{total_pages}...")
             page = doc.load_page(page_num)
             
             # Try to extract text directly first
+            logger.info(f"[EXTRACTOR] Page {page_num + 1}: Extracting direct text...")
             direct_text = page.get_text()
             
             # Convert page to image for OCR
+            logger.info(f"[EXTRACTOR] Page {page_num + 1}: Converting to image for OCR...")
             mat = fitz.Matrix(2.0, 2.0)  # Higher resolution
             pix = page.get_pixmap(matrix=mat)
             img_data = pix.tobytes("png")
@@ -338,9 +347,11 @@ class BankStatementExtractor:
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
             # Preprocess image
+            logger.info(f"[EXTRACTOR] Page {page_num + 1}: Preprocessing image...")
             processed_image = self.preprocess_image(image)
             
             # OCR extraction with Arabic+English
+            logger.info(f"[EXTRACTOR] Page {page_num + 1}: Running OCR (this may take time)...")
             ocr_text = pytesseract.image_to_string(
                 processed_image, config=self.get_ocr_config()
             )
@@ -348,8 +359,12 @@ class BankStatementExtractor:
             # Combine direct text and OCR text
             combined_text = direct_text + "\n" + ocr_text
             all_text.append(combined_text)
+            
+            page_elapsed = (datetime.now() - page_start).total_seconds()
+            logger.info(f"[EXTRACTOR] Page {page_num + 1}/{total_pages} completed in {page_elapsed:.2f} seconds")
         
         doc.close()
+        logger.info(f"[EXTRACTOR] All {total_pages} pages extracted successfully")
         return all_text
 
     def extract_account_info(self, text, language, different_amount_format):
@@ -493,13 +508,16 @@ class BankStatementExtractor:
 
     def extract_transactions(self, text_pages, language, different_amount_format):
         """Extract transaction details from all pages"""
+        logger.info(f"[EXTRACTOR] Starting transaction extraction from {len(text_pages)} pages")
         transactions = []
         last_valid_date = None
         
         amount_config = self.config.get("amount_patterns", {})
         currency_symbols = amount_config.get("currency_symbols", ["SAR"])
         
-        for page_idx, page_text in enumerate(text_pages): 
+        for page_idx, page_text in enumerate(text_pages):
+            transactions_before_page = len(transactions)
+            logger.info(f"[EXTRACTOR] Extracting transactions from page {page_idx + 1}/{len(text_pages)}...") 
             lines = page_text.split('\n')
             
             for i, line in enumerate(lines):
@@ -543,7 +561,11 @@ class BankStatementExtractor:
                                     continue
                             transactions.append(transaction)
                             last_valid_date = current_date
+            
+            transactions_on_page = len(transactions) - transactions_before_page
+            logger.info(f"[EXTRACTOR] Page {page_idx + 1}: Found {transactions_on_page} transactions (total: {len(transactions)})")
         
+        logger.info(f"[EXTRACTOR] Transaction extraction complete: {len(transactions)} total transactions found")
         return transactions
 
 
@@ -551,13 +573,15 @@ class BankStatementExtractor:
 
     def extract_rtl_transactions(self, text_pages, language):
         """Extract transaction details from all pages"""
+        logger.info(f"[EXTRACTOR] Starting RTL transaction extraction from {len(text_pages)} pages")
         transactions = []
         last_valid_date = None
         
         amount_config = self.config.get("amount_patterns", {})
         currency_symbols = amount_config.get("currency_symbols", ["SAR"])
         
-        for page_idx, page_text in enumerate(text_pages): 
+        for page_idx, page_text in enumerate(text_pages):
+            logger.info(f"[EXTRACTOR] Extracting RTL transactions from page {page_idx + 1}/{len(text_pages)}...") 
             lines = page_text.split('\n')
             
             for i, line in enumerate(lines):
@@ -1072,47 +1096,64 @@ class BankStatementExtractor:
 
     def process_bank_statement(self, pdf_path):
         """Main method to process bank statement PDF"""
-        print(f"Processing bank statement: {pdf_path}")
-
+        start_time = datetime.now()
+        logger.info(f"[EXTRACTOR] Starting bank statement processing: {pdf_path}")
+        
         # Extract text from PDF
-        # text_pages, images = self.extract_text_from_pdf(pdf_path)
+        logger.info(f"[EXTRACTOR] Step 1: Extracting text from PDF...")
         text_pages = self.extract_text_from_pdf(pdf_path)
         
         if not text_pages:
+            logger.error(f"[EXTRACTOR] Failed to extract text from PDF")
             return {"error": "Could not extract text from PDF"}
+        
+        logger.info(f"[EXTRACTOR] Step 1 complete: Extracted {len(text_pages)} pages")
         
         # NEW: Extract header from second page
+        logger.info(f"[EXTRACTOR] Step 2: Extracting header information...")
         header_info = self.extract_header_from_second_page(text_pages)
-
         is_LTR = header_info["is_LTR"]
         different_amount_format = header_info["different_amount_format"]
-        
+        logger.info(f"[EXTRACTOR] Step 2 complete: LTR={is_LTR}, amount_format={different_amount_format}")
 
         # Detect language from first page
+        logger.info(f"[EXTRACTOR] Step 3: Detecting language...")
         language = self.detect_language(text_pages[0])
+        logger.info(f"[EXTRACTOR] Step 3 complete: Language detected: {language}")
         
         # Extract account information from first page
+        logger.info(f"[EXTRACTOR] Step 4: Extracting account information...")
         account_info = self.extract_account_info(text_pages[0], language, different_amount_format)
-        
+        logger.info(f"[EXTRACTOR] Step 4 complete: Account info extracted")
         
         if not text_pages:
+            logger.error(f"[EXTRACTOR] Text pages lost after account info extraction")
             return {"error": "Could not extract text from PDF"}
 
-
-
+        # Extract transactions
+        logger.info(f"[EXTRACTOR] Step 5: Extracting transactions ({'LTR' if is_LTR else 'RTL'})...")
         if is_LTR:
             # Extract all transactions for LTR (Left-to-Right) language
             transactions = self.extract_transactions(text_pages, language, different_amount_format)
         else:
             # Extract all transactions for RTL (Right-to-Left) language
             transactions = self.extract_rtl_transactions(text_pages, language)
-        
+        logger.info(f"[EXTRACTOR] Step 5 complete: Extracted {len(transactions)} transactions")
         
         # Analyze monthly transactions
+        logger.info(f"[EXTRACTOR] Step 6: Analyzing monthly transactions...")
         monthly_analysis = self.analyze_monthly_transactions(transactions)
+        logger.info(f"[EXTRACTOR] Step 6 complete: Monthly analysis done for {len(monthly_analysis)} months")
+        
         # Calculate analytics
+        logger.info(f"[EXTRACTOR] Step 7: Calculating analytics...")
         analytics = self.calculate_analytics(monthly_analysis)
+        logger.info(f"[EXTRACTOR] Step 7 complete: Analytics calculated")
+        
         # Compile results
+        elapsed = (datetime.now() - start_time).total_seconds()
+        logger.info(f"[EXTRACTOR] Processing complete: {len(text_pages)} pages, {len(transactions)} transactions in {elapsed:.2f} seconds")
+        
         results = {
             'account_info': account_info,
             'total_transactions': len(transactions),
