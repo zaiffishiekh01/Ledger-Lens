@@ -320,8 +320,10 @@ class BankStatementExtractor:
         
         return cleaned
 
-    def extract_text_from_pdf(self, pdf_path):
+    def extract_text_from_pdf(self, pdf_path, pdf_upload_id=None):
         """Extract text from PDF using PyMuPDF and OCR"""
+        from .models import PDFUpload
+        
         doc = fitz.open(pdf_path)
         total_pages = len(doc)
         logger.info(f"[EXTRACTOR] Opening PDF with {total_pages} pages")
@@ -330,6 +332,16 @@ class BankStatementExtractor:
         for page_num in range(total_pages):
             page_start = datetime.now()
             logger.info(f"[EXTRACTOR] Processing page {page_num + 1}/{total_pages}...")
+            
+            # Checkpoint: Check if PDF deleted after each page
+            if pdf_upload_id:
+                try:
+                    PDFUpload.objects.get(id=pdf_upload_id)
+                except PDFUpload.DoesNotExist:
+                    logger.info(f"[EXTRACTOR] PDF {pdf_upload_id} deleted, stopping at page {page_num + 1}")
+                    doc.close()
+                    return None
+            
             page = doc.load_page(page_num)
             
             # Try to extract text directly first
@@ -1094,16 +1106,20 @@ class BankStatementExtractor:
         
         return 'arabic' if arabic_chars > english_chars else 'english'
 
-    def process_bank_statement(self, pdf_path):
+    def process_bank_statement(self, pdf_path, pdf_upload_id=None):
         """Main method to process bank statement PDF"""
         start_time = datetime.now()
         logger.info(f"[EXTRACTOR] Starting bank statement processing: {pdf_path}")
         
         # Extract text from PDF
         logger.info(f"[EXTRACTOR] Step 1: Extracting text from PDF...")
-        text_pages = self.extract_text_from_pdf(pdf_path)
+        text_pages = self.extract_text_from_pdf(pdf_path, pdf_upload_id)
         
         if not text_pages:
+            # Check if PDF was deleted (None means deleted, empty list means error)
+            if text_pages is None:
+                logger.info(f"[EXTRACTOR] PDF {pdf_upload_id} deleted during extraction, stopping")
+                return {"error": "PDF processing stopped"}
             logger.error(f"[EXTRACTOR] Failed to extract text from PDF")
             return {"error": "Could not extract text from PDF"}
         

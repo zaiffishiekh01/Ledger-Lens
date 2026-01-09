@@ -63,12 +63,18 @@ def process_pdf_background(pdf_upload_id):
         extractor = BankStatementExtractor()
         logger.info(f"[PDF {pdf_upload_id}] Extractor initialized, calling process_bank_statement...")
         
-        results = extractor.process_bank_statement(file_path)
+        # Pass pdf_upload_id to extractor for checkpoint checks
+        results = extractor.process_bank_statement(file_path, pdf_upload_id)
+        
+        # Check if processing was stopped (PDF deleted)
+        if results and 'error' in results and results['error'] == "PDF processing stopped":
+            logger.info(f"[PDF {pdf_upload_id}] Processing stopped - PDF deleted during extraction")
+            return
         
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(f"[PDF {pdf_upload_id}] PDF extraction completed in {elapsed:.2f} seconds")
         
-        if 'error' in results:
+        if not results or 'error' in results:
             logger.error(f"[PDF {pdf_upload_id}] Extraction error: {results['error']}")
             pdf_upload.processing_error = results['error']
             pdf_upload.save()
@@ -279,6 +285,37 @@ def list_pdf_uploads(request):
     except Exception as e:
         return Response(
             {'error': f'Error listing PDF uploads: {str(e)}'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['POST'])
+def stop_pdf_processing(request, pdf_id):
+    """Stop processing and delete PDF when frontend times out"""
+    try:
+        logger.info(f"[PDF {pdf_id}] Stop processing request received")
+        pdf_upload = PDFUpload.objects.get(id=pdf_id)
+        
+        if pdf_upload.file:
+            pdf_upload.file.delete(save=False)
+            logger.info(f"[PDF {pdf_id}] PDF file deleted")
+        
+        pdf_upload.delete()
+        logger.info(f"[PDF {pdf_id}] PDF upload record deleted")
+        
+        return Response(
+            {'message': 'PDF processing stopped and deleted successfully'}, 
+            status=status.HTTP_200_OK
+        )
+    except PDFUpload.DoesNotExist:
+        logger.warning(f"[PDF {pdf_id}] Stop request for non-existent PDF")
+        return Response(
+            {'error': 'PDF upload not found'}, 
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"[PDF {pdf_id}] Error stopping processing: {str(e)}", exc_info=True)
+        return Response(
+            {'error': f'Error stopping processing: {str(e)}'}, 
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
