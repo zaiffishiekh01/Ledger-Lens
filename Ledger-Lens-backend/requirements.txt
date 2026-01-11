@@ -13,3 +13,5 @@ pytesseract==0.3.13
 sqlparse==0.5.4
 tzdata==2025.3
 psycopg2-binary==2.9.11
+django-storages==1.14.2
+boto3==1.35.0

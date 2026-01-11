@@ -47,6 +47,7 @@ def process_pdf_background(pdf_upload_id):
     start_time = datetime.now()
     extractor = None
     results = None
+    temp_file_path = None
     try:
         logger.info(f"[PDF {pdf_upload_id}] Background processing started at {start_time}")
         pdf_upload = PDFUpload.objects.get(id=pdf_upload_id)
@@ -56,7 +57,20 @@ def process_pdf_background(pdf_upload_id):
             logger.info(f"[PDF {pdf_upload_id}] Already processed, skipping")
             return
         
-        file_path = pdf_upload.file.path
+        # Get file path (works with both local and Supabase Storage)
+        if hasattr(pdf_upload.file, 'path'):
+            # Local filesystem
+            file_path = pdf_upload.file.path
+        else:
+            # Supabase Storage (S3) - download to temp file
+            import tempfile
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+            temp_file.write(pdf_upload.file.read())
+            temp_file.close()
+            file_path = temp_file.name
+            temp_file_path = file_path  # Store for cleanup
+            logger.info(f"[PDF {pdf_upload_id}] Downloaded from Supabase Storage to temp file: {file_path}")
+        
         logger.info(f"[PDF {pdf_upload_id}] File path: {file_path}")
         
         # Check for existing progress (resume from last page)
@@ -147,6 +161,14 @@ def process_pdf_background(pdf_upload_id):
         # Force garbage collection to free memory
         gc.collect()
         logger.info(f"[PDF {pdf_upload_id}] Memory cleaned up")
+        
+        # Cleanup temp file if used (Supabase Storage)
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+                logger.info(f"[PDF {pdf_upload_id}] Temp file deleted: {temp_file_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"[PDF {pdf_upload_id}] Failed to delete temp file: {cleanup_error}")
     except Exception as e:
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.error(f"[PDF {pdf_upload_id}] ERROR after {elapsed:.2f} seconds: {str(e)}", exc_info=True)
@@ -163,6 +185,13 @@ def process_pdf_background(pdf_upload_id):
                 del results
             if extractor:
                 del extractor
+            # Cleanup temp file if used (Supabase Storage)
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    logger.info(f"[PDF {pdf_upload_id}] Temp file deleted after error: {temp_file_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"[PDF {pdf_upload_id}] Failed to delete temp file after error: {cleanup_error}")
             gc.collect()
             logger.info(f"[PDF {pdf_upload_id}] Cleanup completed after error")
 

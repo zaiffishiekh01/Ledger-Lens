@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
+    'storages',  # For Supabase Storage
     'accounts',
 ]
 
@@ -136,8 +137,31 @@ STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Media files (Uploaded files)
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+# Use Supabase Storage in production, local filesystem in development
+USE_SUPABASE_STORAGE = os.getenv('USE_SUPABASE_STORAGE', 'False').lower() == 'true'
+
+if USE_SUPABASE_STORAGE:
+    # Supabase Storage (S3-compatible)
+    AWS_ACCESS_KEY_ID = os.getenv('SUPABASE_STORAGE_ACCESS_KEY')
+    AWS_SECRET_ACCESS_KEY = os.getenv('SUPABASE_STORAGE_SECRET_KEY')
+    AWS_STORAGE_BUCKET_NAME = os.getenv('SUPABASE_STORAGE_BUCKET_NAME', 'pdfs')
+    AWS_S3_ENDPOINT_URL = os.getenv('SUPABASE_STORAGE_ENDPOINT_URL')  # e.g., https://your-project.supabase.co/storage/v1/s3
+    AWS_S3_REGION_NAME = os.getenv('SUPABASE_STORAGE_REGION', 'us-east-1')
+    AWS_S3_CUSTOM_DOMAIN = os.getenv('SUPABASE_STORAGE_CUSTOM_DOMAIN')  # Optional: CDN domain
+    AWS_S3_OBJECT_PARAMETERS = {
+        'CacheControl': 'max-age=86400',
+    }
+    AWS_DEFAULT_ACL = 'private'  # Private bucket - only backend can access
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_QUERYSTRING_AUTH = True  # Use signed URLs for secure access
+    
+    # Use S3 for media files
+    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+    MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
+else:
+    # Local filesystem (development)
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
