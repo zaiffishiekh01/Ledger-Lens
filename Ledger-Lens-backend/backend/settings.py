@@ -138,7 +138,12 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Media files (Uploaded files)
 # Use Supabase Storage in production, local filesystem in development
-USE_SUPABASE_STORAGE = os.getenv('USE_SUPABASE_STORAGE', 'False').lower() == 'true'
+import logging
+logger = logging.getLogger(__name__)
+
+USE_SUPABASE_STORAGE_ENV = os.getenv('USE_SUPABASE_STORAGE', 'False')
+USE_SUPABASE_STORAGE = USE_SUPABASE_STORAGE_ENV.lower() == 'true'
+logger.info(f"[SETTINGS] USE_SUPABASE_STORAGE env value: '{USE_SUPABASE_STORAGE_ENV}' -> {USE_SUPABASE_STORAGE}")
 
 if USE_SUPABASE_STORAGE:
     # Supabase Storage (S3-compatible)
@@ -148,6 +153,14 @@ if USE_SUPABASE_STORAGE:
     AWS_S3_ENDPOINT_URL = os.getenv('SUPABASE_STORAGE_ENDPOINT_URL')  # e.g., https://your-project.supabase.co/storage/v1/s3
     AWS_S3_REGION_NAME = os.getenv('SUPABASE_STORAGE_REGION', 'us-east-1')
     AWS_S3_CUSTOM_DOMAIN = os.getenv('SUPABASE_STORAGE_CUSTOM_DOMAIN')  # Optional: CDN domain
+    
+    logger.info(f"[SETTINGS] Supabase Storage enabled")
+    logger.info(f"[SETTINGS] AWS_ACCESS_KEY_ID present: {bool(AWS_ACCESS_KEY_ID)}")
+    logger.info(f"[SETTINGS] AWS_SECRET_ACCESS_KEY present: {bool(AWS_SECRET_ACCESS_KEY)}")
+    logger.info(f"[SETTINGS] AWS_STORAGE_BUCKET_NAME: {AWS_STORAGE_BUCKET_NAME}")
+    logger.info(f"[SETTINGS] AWS_S3_ENDPOINT_URL: {AWS_S3_ENDPOINT_URL}")
+    logger.info(f"[SETTINGS] AWS_S3_REGION_NAME: {AWS_S3_REGION_NAME}")
+    
     AWS_S3_OBJECT_PARAMETERS = {
         'CacheControl': 'max-age=86400',
     }
@@ -158,10 +171,14 @@ if USE_SUPABASE_STORAGE:
     # Use S3 for media files
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
+    logger.info(f"[SETTINGS] Using Supabase Storage backend: {DEFAULT_FILE_STORAGE}")
+    logger.info(f"[SETTINGS] MEDIA_URL: {MEDIA_URL}")
 else:
     # Local filesystem (development)
     MEDIA_URL = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+    logger.info(f"[SETTINGS] Using local filesystem storage")
+    logger.info(f"[SETTINGS] MEDIA_ROOT: {MEDIA_ROOT}")
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
